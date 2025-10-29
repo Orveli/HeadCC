@@ -1,0 +1,39 @@
+{
+  "midi_port_substr": "HeadCC",
+  "midi_channel": 0,
+  "cc_yaw": 1,
+  "cc_pitch": 11,
+  "cc_roll": 74,
+  "send_rate_hz": 30,
+  "smooth_alpha": 0.25,
+  "deadzone_deg": 2.0,
+  "yaw_range_deg": [
+    -22.5,
+    22.5
+  ],
+  "pitch_range_deg": [
+    -22.5,
+    22.5
+  ],
+  "roll_range_deg": [
+    -23.5,
+    23.5
+  ],
+  "invert_yaw": false,
+  "invert_pitch": false,
+  "invert_roll": false,
+  "cam_index": 0,
+  "fov_deg": 60.0,
+  "zero_offsets": {
+    "yaw": 41.81762185951669,
+    "pitch": -312.09886843591795,
+    "roll": 2.468006055082034
+  },
+  "width": 1280,
+  "height": 720,
+  "fps": 60,
+  "cc_yaw_abs": 21,
+  "cc_pitch_abs": 22,
+  "cc_roll_abs": 23,
+  "global_sens_pct": 100
+}
