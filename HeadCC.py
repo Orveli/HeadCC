@@ -1,4 +1,4 @@
-# HeadCC.py — robust baseline, 6x CC, mute toggle, global sensitivity, MIDI monitor, save/reset
+# HeadCC.py — robust baseline, 6x CC, mute toggle, global sensitivity, control panel, save/reset
 # Python 3.10 x64, mediapipe 0.10.x
 import os, json, time, argparse, collections
 import numpy as np
@@ -134,57 +134,117 @@ def map_abs(val_deg, rng):
     return int(clamp(round(norm*127),0,127))
 
 # ---------- UI helpers ----------
-class MidiButtons:
-    def __init__(self, title, w=360, h=420):
-        self.win = title
-        cv.namedWindow(self.win, cv.WINDOW_NORMAL)
-        cv.resizeWindow(self.win, w, h)
-        cv.setMouseCallback(self.win, self.on_mouse)
+class ControlPanel:
+    def __init__(self, window, w=420, h=620, status_lines=5):
+        self.win = window
+        self.w, self.h = w, h
         self.img = np.zeros((h, w, 3), dtype=np.uint8)
-        self.buttons = []  # (x0,y0,x1,y1,label,action)
+        self.buttons = []  # list of (label, action)
+        self.button_boxes = []  # cached layout (x0,y0,x1,y1,label,action)
         self.clicked_action = None
+        self.readouts = []
+        self.centered = (0, 0, 0)
+        self.abscc = (0, 0, 0)
+        self.status = collections.deque(maxlen=status_lines)
+        self.dirty = True
+        self.flash_idx = None
+        self.flash_until = 0.0
+        cv.setMouseCallback(self.win, self.on_mouse)
 
-    def set(self, items):
-        self.buttons = items
-        self.render()
+    def set_buttons(self, items):
+        self.buttons = list(items)
+        self.button_boxes = []
+        self.mark_dirty()
 
-    def render(self):
-        self.img[:] = (25,25,25)
-        for (x0,y0,x1,y1,label,_) in self.buttons:
-            cv.rectangle(self.img, (x0,y0), (x1,y1), (200,200,200), 1)
-            cv.putText(self.img, label, (x0+10, y0+28),
-                       cv.FONT_HERSHEY_SIMPLEX, 0.7, (220,220,220), 1, cv.LINE_AA)
-        cv.imshow(self.win, self.img)
+    def update_readouts(self, items):
+        self.readouts = list(items)
+        self.mark_dirty()
+
+    def update_cc_values(self, centered, abscc):
+        self.centered = tuple(centered)
+        self.abscc = tuple(abscc)
+        self.mark_dirty()
+
+    def notify(self, text):
+        self.status.appendleft(text)
+        self.mark_dirty()
+
+    def consume_action(self):
+        act = self.clicked_action
+        self.clicked_action = None
+        return act
+
+    def mark_dirty(self):
+        self.dirty = True
 
     def on_mouse(self, event, x, y, flags, param):
         if event == cv.EVENT_LBUTTONDOWN:
-            for (x0,y0,x1,y1,label,action) in self.buttons:
+            for idx, (x0, y0, x1, y1, label, action) in enumerate(self.button_boxes):
                 if x0 <= x <= x1 and y0 <= y <= y1:
-                    cv.rectangle(self.img, (x0,y0), (x1,y1), (0,255,0), 2)
-                    cv.imshow(self.win, self.img)
                     self.clicked_action = action
+                    self.flash_idx = idx
+                    self.flash_until = time.time() + 0.2
+                    self.mark_dirty()
                     break
 
-class MidiMonitor:
-    def __init__(self, title, w=420, h=320, max_lines=18):
-        self.win = title
-        self.w, self.h = w, h
-        cv.namedWindow(self.win, cv.WINDOW_NORMAL)
-        cv.resizeWindow(self.win, w, h)
-        self.max_lines = max_lines
-        self.lines = collections.deque(maxlen=max_lines)
-
-    def push(self, text):
-        self.lines.appendleft(text)
-        self.render()
+    def render_if_needed(self):
+        if self.dirty:
+            self.render()
 
     def render(self):
-        img = np.zeros((self.h, self.w, 3), dtype=np.uint8)
-        y = 24
-        for line in self.lines:
-            cv.putText(img, line, (10, y), cv.FONT_HERSHEY_SIMPLEX, 0.55, (220,220,220), 1, cv.LINE_AA)
-            y += 16
-        cv.imshow(self.win, img)
+        self.dirty = False
+        self.img[:] = (28, 28, 28)
+        font = cv.FONT_HERSHEY_SIMPLEX
+
+        cv.putText(self.img, "Control Panel", (20, 34), font, 0.8, (250, 250, 250), 2, cv.LINE_AA)
+
+        y = 64
+        for label, value in self.readouts:
+            cv.putText(self.img, f"{label}: {value}", (20, y), font, 0.55, (220, 220, 220), 1, cv.LINE_AA)
+            y += 24
+
+        y += 6
+        cv.putText(self.img, "CC output", (20, y), font, 0.6, (200, 210, 255), 1, cv.LINE_AA)
+        y += 24
+        cv.putText(self.img,
+                   f"Centered CC1/11/74  {self.centered[0]:3d}  {self.centered[1]:3d}  {self.centered[2]:3d}",
+                   (20, y), font, 0.5, (210, 210, 210), 1, cv.LINE_AA)
+        y += 20
+        cv.putText(self.img,
+                   f"Absolute CC21/22/23 {self.abscc[0]:3d}  {self.abscc[1]:3d}  {self.abscc[2]:3d}",
+                   (20, y), font, 0.5, (210, 210, 210), 1, cv.LINE_AA)
+
+        y += 32
+        cv.putText(self.img, "Actions", (20, y), font, 0.6, (200, 210, 255), 1, cv.LINE_AA)
+        y += 10
+
+        now = time.time()
+        btn_width = self.w - 40
+        btn_height = 36
+        gap = 10
+        x0 = 20
+        start_y = y + 4
+        self.button_boxes = []
+        for idx, (label, action) in enumerate(self.buttons):
+            y0 = start_y + idx * (btn_height + gap)
+            y1 = y0 + btn_height
+            x1 = x0 + btn_width
+            self.button_boxes.append((x0, y0, x1, y1, label, action))
+            cv.rectangle(self.img, (x0, y0), (x1, y1), (200, 200, 200), 1)
+            if idx == self.flash_idx and now < self.flash_until:
+                cv.rectangle(self.img, (x0, y0), (x1, y1), (0, 255, 0), 2)
+            cv.putText(self.img, label, (x0 + 10, y0 + 24), font, 0.55, (230, 230, 230), 1, cv.LINE_AA)
+
+        y = start_y + len(self.buttons) * (btn_height + gap) + 16
+        if y > self.h - 90:
+            y = self.h - 90
+        cv.putText(self.img, "Status", (20, y), font, 0.6, (200, 210, 255), 1, cv.LINE_AA)
+        y += 24
+        for line in self.status:
+            cv.putText(self.img, line, (20, y), font, 0.5, (210, 210, 210), 1, cv.LINE_AA)
+            y += 18
+
+        cv.imshow(self.win, self.img)
 
 def draw_bars(frame, triplet, title, origin=(20,80)):
     x0,y0=origin; w=360; h=20; gap=10; font=cv.FONT_HERSHEY_SIMPLEX
@@ -197,16 +257,26 @@ def draw_bars(frame, triplet, title, origin=(20,80)):
         cv.rectangle(frame,(x0,y),(x0+fill,y+h),(0,255,0),-1)
         cv.putText(frame,f"{name} {val:3d}",(x0+w+10,y+h-4),font,0.55,(255,255,255),1,cv.LINE_AA)
 
+TB_YAW = "Yaw span (deg)"
+TB_PITCH = "Pitch span (deg)"
+TB_ROLL = "Roll span (deg)"
+TB_GLOBAL = "Sensitivity (%)"
+TB_DEADZONE = "Deadzone (0.1deg)"
+TB_SMOOTH = "Smoothing (x100)"
+TB_RATE = "Send rate (Hz)"
+TB_SEND = "Send on/off"
+TB_CHAN = "MIDI channel"
+
 def set_trackbars_from_cfg(ctrl, cfg):
     def total_span(r): return int(round(abs(r[1]-r[0])))
-    cv.setTrackbarPos("Yaw span°",   ctrl, total_span(cfg["yaw_range_deg"]))
-    cv.setTrackbarPos("Pitch span°", ctrl, total_span(cfg["pitch_range_deg"]))
-    cv.setTrackbarPos("Roll span°",  ctrl, total_span(cfg["roll_range_deg"]))
-    cv.setTrackbarPos("Deadzone x10°", ctrl, int(cfg["deadzone_deg"]*10))
-    cv.setTrackbarPos("Smooth x100",   ctrl, int(cfg["smooth_alpha"]*100))
-    cv.setTrackbarPos("Rate Hz",       ctrl, int(cfg["send_rate_hz"]))
-    cv.setTrackbarPos("Global sens %", ctrl, int(cfg["global_sens_pct"]))
-    cv.setTrackbarPos("Channel 1..16", ctrl, int(cfg["midi_channel"]+1))
+    cv.setTrackbarPos(TB_YAW,   ctrl, total_span(cfg["yaw_range_deg"]))
+    cv.setTrackbarPos(TB_PITCH, ctrl, total_span(cfg["pitch_range_deg"]))
+    cv.setTrackbarPos(TB_ROLL,  ctrl, total_span(cfg["roll_range_deg"]))
+    cv.setTrackbarPos(TB_DEADZONE, ctrl, int(cfg["deadzone_deg"]*10))
+    cv.setTrackbarPos(TB_SMOOTH,   ctrl, int(cfg["smooth_alpha"]*100))
+    cv.setTrackbarPos(TB_RATE,       ctrl, int(cfg["send_rate_hz"]))
+    cv.setTrackbarPos(TB_GLOBAL, ctrl, int(cfg["global_sens_pct"]))
+    cv.setTrackbarPos(TB_CHAN, ctrl, int(cfg["midi_channel"]+1))
 
 # ---------- main ----------
 def main():
@@ -229,9 +299,8 @@ def main():
 
     # Windows
     win="Head -> MIDI CC"; cv.namedWindow(win, cv.WINDOW_NORMAL); cv.moveWindow(win, 40, 40); cv.resizeWindow(win, 1050, 700)
-    ctrl="Controls"; cv.namedWindow(ctrl, cv.WINDOW_NORMAL); cv.moveWindow(ctrl, 1120, 40); cv.resizeWindow(ctrl, 360, 360)
-    tools = MidiButtons("MIDI Tools", 360, 420); cv.moveWindow("MIDI Tools", 1120, 420)
-    mon = MidiMonitor("MIDI Monitor", 460, 320, max_lines=18); cv.moveWindow("MIDI Monitor", 40, 760)
+    ctrl="Control Panel"; cv.namedWindow(ctrl, cv.WINDOW_NORMAL); cv.moveWindow(ctrl, 1120, 40); cv.resizeWindow(ctrl, 420, 640)
+    panel = ControlPanel(ctrl, 420, 640)
 
     # Trackbars
     def mk_tb(name, init, maxv): cv.createTrackbar(name, ctrl, init, maxv, lambda *_: None)
@@ -241,15 +310,15 @@ def main():
         v = int(clamp(v, 10, 180))
         mk_tb(label, v, 180)
 
-    init_span_tb("Yaw span°",   "yaw_range_deg",   90)
-    init_span_tb("Pitch span°", "pitch_range_deg", 60)
-    init_span_tb("Roll span°",  "roll_range_deg",  70)
-    mk_tb("Global sens %", int(cfg["global_sens_pct"]), 300)
-    mk_tb("Deadzone x10°", int(cfg["deadzone_deg"]*10), 100)
-    mk_tb("Smooth x100",   int(cfg["smooth_alpha"]*100), 100)
-    mk_tb("Rate Hz",       int(cfg["send_rate_hz"]), 120)
-    mk_tb("Send 0/1",      1, 1)  # mute toggle (space toggles too)
-    mk_tb("Channel 1..16", int(cfg["midi_channel"]+1), 16)
+    init_span_tb(TB_YAW,   "yaw_range_deg",   90)
+    init_span_tb(TB_PITCH, "pitch_range_deg", 60)
+    init_span_tb(TB_ROLL,  "roll_range_deg",  70)
+    mk_tb(TB_GLOBAL, int(cfg["global_sens_pct"]), 300)
+    mk_tb(TB_DEADZONE, int(cfg["deadzone_deg"]*10), 100)
+    mk_tb(TB_SMOOTH,   int(cfg["smooth_alpha"]*100), 100)
+    mk_tb(TB_RATE,       int(cfg["send_rate_hz"]), 120)
+    mk_tb(TB_SEND,      1, 1)  # mute toggle (space toggles too)
+    mk_tb(TB_CHAN, int(cfg["midi_channel"]+1), 16)
 
     # Tools buttons
     rows = [
@@ -262,11 +331,10 @@ def main():
         ("Save settings",           "save"),
         ("Reset settings",          "reset"),
     ]
-    btns=[]; x0,y0,wbtn,hbtn,gap = 10,20,340,44,10
-    for i,(label,act) in enumerate(rows):
-        y=y0+i*(hbtn+gap)
-        btns.append((x0,y,x0+wbtn,y+hbtn,label,act))
-    tools.set(btns)
+    panel.set_buttons(rows)
+    panel.notify("Controls ready. Space toggles send, Q quits.")
+    panel.notify("Press C to recalibrate origin; Y/P/R invert axes.")
+    panel.render_if_needed()
 
     # FaceMesh
     mp_face=mp.solutions.face_mesh
@@ -281,9 +349,6 @@ def main():
     last_send=0.0
     centered=(64,64,64); abscc=(0,0,0)
 
-    # init monitor header
-    mon.push("MIDI messages (newest first)")
-
     try:
         while True:
             ok, frame = cap.read()
@@ -294,15 +359,15 @@ def main():
             # read controls
             def span_from_tb(tb):
                 return float(clamp(cv.getTrackbarPos(tb, ctrl), 10, 180))
-            base_yaw_span   = span_from_tb("Yaw span°")
-            base_pitch_span = span_from_tb("Pitch span°")
-            base_roll_span  = span_from_tb("Roll span°")
-            cfg["global_sens_pct"] = clamp(cv.getTrackbarPos("Global sens %", ctrl), 10, 300)
-            cfg["deadzone_deg"]    = cv.getTrackbarPos("Deadzone x10°", ctrl)/10.0
-            cfg["smooth_alpha"]    = cv.getTrackbarPos("Smooth x100",   ctrl)/100.0
-            cfg["send_rate_hz"]    = max(1, cv.getTrackbarPos("Rate Hz", ctrl) or 30)
-            send_enabled           = cv.getTrackbarPos("Send 0/1", ctrl) == 1
-            cfg["midi_channel"]    = clamp(cv.getTrackbarPos("Channel 1..16", ctrl)-1, 0, 15)
+            base_yaw_span   = span_from_tb(TB_YAW)
+            base_pitch_span = span_from_tb(TB_PITCH)
+            base_roll_span  = span_from_tb(TB_ROLL)
+            cfg["global_sens_pct"] = clamp(cv.getTrackbarPos(TB_GLOBAL, ctrl), 10, 300)
+            cfg["deadzone_deg"]    = cv.getTrackbarPos(TB_DEADZONE, ctrl)/10.0
+            cfg["smooth_alpha"]    = cv.getTrackbarPos(TB_SMOOTH,   ctrl)/100.0
+            cfg["send_rate_hz"]    = max(1, cv.getTrackbarPos(TB_RATE, ctrl) or 30)
+            send_enabled           = cv.getTrackbarPos(TB_SEND, ctrl) == 1
+            cfg["midi_channel"]    = clamp(cv.getTrackbarPos(TB_CHAN, ctrl)-1, 0, 15)
 
             # keep base spans in cfg (so save/restore matches sliders)
             cfg["yaw_range_deg"]   = [-base_yaw_span/2.0,   base_yaw_span/2.0]
@@ -367,13 +432,13 @@ def main():
                                      (cfg["cc_pitch"],cp,"Pitch"),
                                      (cfg["cc_roll"],cr,"Roll")]:
                     midi.send(Message('control_change', channel=ch, control=cc, value=val))
-                    mon.push(f"ch{ch+1} CC{cc:>3} {label:<6} = {val:3d}")
                 # absolute
                 for cc,val,label in [(cfg["cc_yaw_abs"],ay,"YawAbs"),
                                      (cfg["cc_pitch_abs"],ap,"PitchAbs"),
                                      (cfg["cc_roll_abs"],ar,"RollAbs")]:
                     midi.send(Message('control_change', channel=ch, control=cc, value=val))
-                    mon.push(f"ch{ch+1} CC{cc:>3} {label:<8} = {val:3d}")
+
+            panel.update_cc_values(centered, abscc)
 
             # bars
             draw_bars(frame, centered, "Centered CC  CC1/11/74", origin=(20,80))
@@ -384,28 +449,26 @@ def main():
             cv.imshow(win, frame)
 
             # Button actions
-            if getattr(tools, "clicked_action", None):
-                act = tools.clicked_action
-                tools.clicked_action = None
+            act = panel.consume_action()
+            if act:
                 ch = cfg["midi_channel"]
                 if act.startswith("cc:"):
                     cc = int(act.split(":")[1])
                     # emit a short pair for MIDI-learn
                     midi.send(Message('control_change', channel=ch, control=cc, value=127))
                     midi.send(Message('control_change', channel=ch, control=cc, value=0))
-                    mon.push(f"ch{ch+1} CC{cc} LEARN pulse")
+                    panel.notify(f"Learn pulse sent on CC{cc} (ch {ch+1})")
                 elif act == "save":
-                    save_cfg(cfg); mon.push("[cfg] saved")
+                    save_cfg(cfg); panel.notify("Settings saved")
                 elif act == "reset":
                     # reset to defaults, keep port/cam
                     keep = {"midi_port_substr": cfg["midi_port_substr"], "cam_index": cfg["cam_index"]}
                     cfg.clear(); cfg.update(DEFAULTS); cfg.update(keep)
                     set_trackbars_from_cfg(ctrl, cfg)
                     # clear baseline and filters
-                    nonlocal_vars = ("R0","eul_prev","yaw_s","pitch_s","roll_s")
                     R0=None; eul_prev=None; yaw_s=pitch_s=roll_s=0.0
-                    save_cfg(cfg); mon.push("[cfg] reset+saved")
-                    tools.render()
+                    save_cfg(cfg); panel.notify("Settings reset to defaults")
+                    panel.mark_dirty()
 
             # keys
             k=cv.waitKey(1)&0xFF
@@ -414,17 +477,37 @@ def main():
                 R0 = R.copy()
                 eul_prev = (0.0,0.0,0.0)
                 yaw_s = pitch_s = roll_s = 0.0
-                mon.push("[cal] origin set")
+                panel.notify("Origin calibrated")
             elif k==ord(' '):
-                cv.setTrackbarPos("Send 0/1", ctrl, 0 if send_enabled else 1)
+                cv.setTrackbarPos(TB_SEND, ctrl, 0 if send_enabled else 1)
+                panel.notify("Send muted" if send_enabled else "Send enabled")
             elif k==ord('y'):
-                cfg["invert_yaw"]=not cfg["invert_yaw"];   mon.push(f"[inv] yaw={cfg['invert_yaw']}")
+                cfg["invert_yaw"]=not cfg["invert_yaw"];   panel.notify(f"Invert yaw: {cfg['invert_yaw']}")
             elif k==ord('p'):
-                cfg["invert_pitch"]=not cfg["invert_pitch"]; mon.push(f"[inv] pitch={cfg['invert_pitch']}")
+                cfg["invert_pitch"]=not cfg["invert_pitch"]; panel.notify(f"Invert pitch: {cfg['invert_pitch']}")
             elif k==ord('r'):
-                cfg["invert_roll"]=not cfg["invert_roll"];   mon.push(f"[inv] roll={cfg['invert_roll']}")
+                cfg["invert_roll"]=not cfg["invert_roll"];   panel.notify(f"Invert roll: {cfg['invert_roll']}")
             elif k==ord('s'):
-                save_cfg(cfg); mon.push("[cfg] saved")
+                save_cfg(cfg); panel.notify("Settings saved")
+
+            status = "Tracking" if pose_ok else "No face"
+            send_state = "On" if send_enabled else "Muted"
+            yaw_half = max(abs(yaw_rng[0]), abs(yaw_rng[1]))
+            pitch_half = max(abs(pitch_rng[0]), abs(pitch_rng[1]))
+            roll_half = max(abs(roll_rng[0]), abs(roll_rng[1]))
+            panel.update_readouts([
+                ("Yaw range", f"±{yaw_half:.0f}°"),
+                ("Pitch range", f"±{pitch_half:.0f}°"),
+                ("Roll range", f"±{roll_half:.0f}°"),
+                ("Sensitivity", f"{cfg['global_sens_pct']}%"),
+                ("Deadzone", f"{cfg['deadzone_deg']:.1f}°"),
+                ("Smooth", f"{cfg['smooth_alpha']:.2f}"),
+                ("Rate", f"{cfg['send_rate_hz']} Hz"),
+                ("Channel", f"{cfg['midi_channel']+1}"),
+                ("Send", send_state),
+                ("Face", status),
+            ])
+            panel.render_if_needed()
 
     finally:
         # auto-save on exit
