@@ -4,6 +4,7 @@ import os, json, time, argparse, collections
 import numpy as np
 import cv2 as cv
 import mediapipe as mp
+from mediapipe import solutions as mp_solutions
 from mido import Message, open_output, get_output_names
 
 CONFIG_PATH = "headcc_cfg.json"
@@ -404,9 +405,14 @@ def main():
     panel.render_if_needed()
 
     # FaceMesh
-    mp_face=mp.solutions.face_mesh
-    face=mp_face.FaceMesh(max_num_faces=1, refine_landmarks=True,
-                          min_detection_confidence=0.6, min_tracking_confidence=0.6)
+    mp_face = mp_solutions.face_mesh
+    face = mp_face.FaceMesh(max_num_faces=1, refine_landmarks=True,
+                            min_detection_confidence=0.6, min_tracking_confidence=0.6)
+    mp_drawing = mp_solutions.drawing_utils
+    mp_styles = mp_solutions.drawing_styles
+    mesh_spec = mp_styles.get_default_face_mesh_tesselation_style()
+    contour_spec = mp_styles.get_default_face_mesh_contours_style()
+    iris_spec = mp_styles.get_default_face_mesh_iris_connections_style()
 
     # Pose state
     prev_rvec = prev_tvec = None
@@ -447,8 +453,10 @@ def main():
             roll_rng  = eff_range(cfg["roll_range_deg"],  cfg["global_sens_pct"])
 
             pose_ok=False
+            face_landmarks=None
             if res.multi_face_landmarks:
-                lms = res.multi_face_landmarks[0].landmark
+                face_landmarks = res.multi_face_landmarks[0]
+                lms = face_landmarks.landmark
                 pts2d = np.array([(lms[i].x*w, lms[i].y*h) for i in LM], dtype=np.float32)
                 R, prev_rvec, prev_tvec = solve_pose(pts2d, w, h, cfg["fov_deg"], prev_rvec, prev_tvec)
                 if R is not None:
@@ -469,6 +477,29 @@ def main():
                     pose_ok=True
 
             # HUD
+            if face_landmarks is not None:
+                mp_drawing.draw_landmarks(
+                    frame,
+                    face_landmarks,
+                    mp_face.FACEMESH_TESSELATION,
+                    landmark_drawing_spec=None,
+                    connection_drawing_spec=mesh_spec,
+                )
+                mp_drawing.draw_landmarks(
+                    frame,
+                    face_landmarks,
+                    mp_face.FACEMESH_CONTOURS,
+                    landmark_drawing_spec=None,
+                    connection_drawing_spec=contour_spec,
+                )
+                mp_drawing.draw_landmarks(
+                    frame,
+                    face_landmarks,
+                    mp_face.FACEMESH_IRISES,
+                    landmark_drawing_spec=None,
+                    connection_drawing_spec=iris_spec,
+                )
+
             if pose_ok:
                 cv.putText(frame, f"Yaw {yaw_s:6.1f}  Pitch {pitch_s:6.1f}  Roll {roll_s:6.1f}",
                            (int(round(20*ui_scale)), int(round(40*ui_scale))), cv.FONT_HERSHEY_SIMPLEX,
