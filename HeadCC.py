@@ -25,8 +25,13 @@ DEFAULTS = {
     "global_sens_pct": 100,     # 10..300 %
     "invert_yaw": False, "invert_pitch": False, "invert_roll": False,
     # camera
-    "cam_index": 0, "width": 1280, "height": 720, "fps": 60, "fov_deg": 60.0
+    "cam_index": 0, "width": 1280, "height": 720, "fps": 60, "fov_deg": 60.0,
+    # UI
+    "ui_scale": 1.0,
 }
+
+UI_SCALE_MIN = 0.6
+UI_SCALE_MAX = 2.5
 
 LM = [1, 152, 33, 263, 61, 291]  # nose, chin, eye outer L/R, mouth L/R
 MODEL_POINTS = np.array([
@@ -135,10 +140,13 @@ def map_abs(val_deg, rng):
 
 # ---------- UI helpers ----------
 class ControlPanel:
-    def __init__(self, window, w=420, h=620, status_lines=5):
+    def __init__(self, window, w=420, h=620, status_lines=5, scale=1.0):
         self.win = window
-        self.w, self.h = w, h
-        self.img = np.zeros((h, w, 3), dtype=np.uint8)
+        self.base_w, self.base_h = w, h
+        self.scale = scale
+        self.w = int(round(self.base_w * self.scale))
+        self.h = int(round(self.base_h * self.scale))
+        self.img = np.zeros((self.h, self.w, 3), dtype=np.uint8)
         self.buttons = []  # list of (label, action)
         self.button_boxes = []  # cached layout (x0,y0,x1,y1,label,action)
         self.clicked_action = None
@@ -150,6 +158,22 @@ class ControlPanel:
         self.flash_idx = None
         self.flash_until = 0.0
         cv.setMouseCallback(self.win, self.on_mouse)
+
+    def set_scale(self, scale):
+        if abs(scale - self.scale) < 1e-6:
+            return
+        self.scale = scale
+        self.w = int(round(self.base_w * self.scale))
+        self.h = int(round(self.base_h * self.scale))
+        self.img = np.zeros((self.h, self.w, 3), dtype=np.uint8)
+        self.button_boxes = []
+        self.mark_dirty()
+
+    def _si(self, value):
+        return int(round(value * self.scale))
+
+    def _thickness(self, value):
+        return max(1, int(round(value * self.scale)))
 
     def set_buttons(self, items):
         self.buttons = list(items)
@@ -193,69 +217,90 @@ class ControlPanel:
 
     def render(self):
         self.dirty = False
+        if self.img.shape[0] != self.h or self.img.shape[1] != self.w:
+            self.img = np.zeros((self.h, self.w, 3), dtype=np.uint8)
         self.img[:] = (28, 28, 28)
+
         font = cv.FONT_HERSHEY_SIMPLEX
+        pad = self._si(20)
+        title_y = self._si(34)
+        cv.putText(self.img, "Control Panel", (pad, title_y), font,
+                   0.8 * self.scale, (250, 250, 250), self._thickness(2), cv.LINE_AA)
 
-        cv.putText(self.img, "Control Panel", (20, 34), font, 0.8, (250, 250, 250), 2, cv.LINE_AA)
-
-        y = 64
+        y = self._si(64)
         for label, value in self.readouts:
-            cv.putText(self.img, f"{label}: {value}", (20, y), font, 0.55, (220, 220, 220), 1, cv.LINE_AA)
-            y += 24
+            cv.putText(self.img, f"{label}: {value}", (pad, y), font,
+                       0.55 * self.scale, (220, 220, 220), self._thickness(1), cv.LINE_AA)
+            y += self._si(24)
 
-        y += 6
-        cv.putText(self.img, "CC output", (20, y), font, 0.6, (200, 210, 255), 1, cv.LINE_AA)
-        y += 24
+        y += self._si(6)
+        cv.putText(self.img, "CC output", (pad, y), font,
+                   0.6 * self.scale, (200, 210, 255), self._thickness(1), cv.LINE_AA)
+        y += self._si(24)
         cv.putText(self.img,
                    f"Centered CC1/11/74  {self.centered[0]:3d}  {self.centered[1]:3d}  {self.centered[2]:3d}",
-                   (20, y), font, 0.5, (210, 210, 210), 1, cv.LINE_AA)
-        y += 20
+                   (pad, y), font, 0.5 * self.scale, (210, 210, 210), self._thickness(1), cv.LINE_AA)
+        y += self._si(20)
         cv.putText(self.img,
                    f"Absolute CC21/22/23 {self.abscc[0]:3d}  {self.abscc[1]:3d}  {self.abscc[2]:3d}",
-                   (20, y), font, 0.5, (210, 210, 210), 1, cv.LINE_AA)
+                   (pad, y), font, 0.5 * self.scale, (210, 210, 210), self._thickness(1), cv.LINE_AA)
 
-        y += 32
-        cv.putText(self.img, "Actions", (20, y), font, 0.6, (200, 210, 255), 1, cv.LINE_AA)
-        y += 10
+        y += self._si(32)
+        cv.putText(self.img, "Actions", (pad, y), font,
+                   0.6 * self.scale, (200, 210, 255), self._thickness(1), cv.LINE_AA)
+        y += self._si(10)
 
         now = time.time()
-        btn_width = self.w - 40
-        btn_height = 36
-        gap = 10
-        x0 = 20
-        start_y = y + 4
+        btn_width = self.w - 2 * pad
+        btn_height = self._si(36)
+        gap = self._si(10)
+        x0 = pad
+        start_y = y + self._si(4)
         self.button_boxes = []
         for idx, (label, action) in enumerate(self.buttons):
             y0 = start_y + idx * (btn_height + gap)
             y1 = y0 + btn_height
             x1 = x0 + btn_width
             self.button_boxes.append((x0, y0, x1, y1, label, action))
-            cv.rectangle(self.img, (x0, y0), (x1, y1), (200, 200, 200), 1)
+            cv.rectangle(self.img, (x0, y0), (x1, y1), (200, 200, 200), self._thickness(1))
             if idx == self.flash_idx and now < self.flash_until:
-                cv.rectangle(self.img, (x0, y0), (x1, y1), (0, 255, 0), 2)
-            cv.putText(self.img, label, (x0 + 10, y0 + 24), font, 0.55, (230, 230, 230), 1, cv.LINE_AA)
+                cv.rectangle(self.img, (x0, y0), (x1, y1), (0, 255, 0), self._thickness(2))
+            cv.putText(self.img, label, (x0 + self._si(10), y0 + self._si(24)), font,
+                       0.55 * self.scale, (230, 230, 230), self._thickness(1), cv.LINE_AA)
 
-        y = start_y + len(self.buttons) * (btn_height + gap) + 16
-        if y > self.h - 90:
-            y = self.h - 90
-        cv.putText(self.img, "Status", (20, y), font, 0.6, (200, 210, 255), 1, cv.LINE_AA)
-        y += 24
+        y = start_y + len(self.buttons) * (btn_height + gap) + self._si(16)
+        if y > self.h - self._si(90):
+            y = self.h - self._si(90)
+        cv.putText(self.img, "Status", (pad, y), font,
+                   0.6 * self.scale, (200, 210, 255), self._thickness(1), cv.LINE_AA)
+        y += self._si(24)
         for line in self.status:
-            cv.putText(self.img, line, (20, y), font, 0.5, (210, 210, 210), 1, cv.LINE_AA)
-            y += 18
+            cv.putText(self.img, line, (pad, y), font, 0.5 * self.scale, (210, 210, 210),
+                       self._thickness(1), cv.LINE_AA)
+            y += self._si(18)
 
         cv.imshow(self.win, self.img)
 
-def draw_bars(frame, triplet, title, origin=(20,80)):
-    x0,y0=origin; w=360; h=20; gap=10; font=cv.FONT_HERSHEY_SIMPLEX
-    cv.putText(frame, title, (x0, y0-12), font, 0.6, (200,200,200), 1, cv.LINE_AA)
-    labels=[("Yaw",triplet[0]),("Pitch",triplet[1]),("Roll",triplet[2])]
-    for i,(name,val) in enumerate(labels):
-        y=y0+i*(h+gap)
-        cv.rectangle(frame,(x0,y),(x0+w,y+h),(160,160,160),1)
-        fill=int((val/127.0)*w)
-        cv.rectangle(frame,(x0,y),(x0+fill,y+h),(0,255,0),-1)
-        cv.putText(frame,f"{name} {val:3d}",(x0+w+10,y+h-4),font,0.55,(255,255,255),1,cv.LINE_AA)
+def draw_bars(frame, triplet, title, origin=(20,80), scale=1.0):
+    font = cv.FONT_HERSHEY_SIMPLEX
+    x0 = int(round(origin[0] * scale))
+    y0 = int(round(origin[1] * scale))
+    w = int(round(360 * scale))
+    h = max(1, int(round(20 * scale)))
+    gap = max(1, int(round(10 * scale)))
+    thickness = max(1, int(round(1 * scale)))
+    label_font_scale = 0.55 * scale
+    cv.putText(frame, title, (x0, y0 - max(1, int(round(12 * scale)))), font,
+               0.6 * scale, (200, 200, 200), thickness, cv.LINE_AA)
+    labels = [("Yaw", triplet[0]), ("Pitch", triplet[1]), ("Roll", triplet[2])]
+    for i, (name, val) in enumerate(labels):
+        y = y0 + i * (h + gap)
+        cv.rectangle(frame, (x0, y), (x0 + w, y + h), (160, 160, 160), thickness)
+        fill = int((val / 127.0) * w)
+        cv.rectangle(frame, (x0, y), (x0 + fill, y + h), (0, 255, 0), -1)
+        cv.putText(frame, f"{name} {val:3d}",
+                   (x0 + w + max(1, int(round(10 * scale))), y + h - max(1, int(round(4 * scale)))),
+                   font, label_font_scale, (255, 255, 255), thickness, cv.LINE_AA)
 
 TB_YAW = "Yaw span (deg)"
 TB_PITCH = "Pitch span (deg)"
@@ -266,6 +311,8 @@ TB_SMOOTH = "Smoothing (x100)"
 TB_RATE = "Send rate (Hz)"
 TB_SEND = "Send on/off"
 TB_CHAN = "MIDI channel"
+
+BAR_BLOCK_BASE_OFFSET = 3 * (20 + 10) + 26
 
 def set_trackbars_from_cfg(ctrl, cfg):
     def total_span(r): return int(round(abs(r[1]-r[0])))
@@ -284,12 +331,17 @@ def main():
     ap.add_argument("--cam", type=int)
     ap.add_argument("--port", type=str)
     ap.add_argument("--showports", action="store_true")
+    ap.add_argument("--ui-scale", type=float)
     args=ap.parse_args()
 
     cfg=load_cfg()
     if args.cam is not None: cfg["cam_index"]=args.cam
     if args.port: cfg["midi_port_substr"]=args.port
+    if args.ui_scale is not None: cfg["ui_scale"] = args.ui_scale
     if args.showports: print(get_output_names()); return
+
+    ui_scale = clamp(float(cfg.get("ui_scale", 1.0)), UI_SCALE_MIN, UI_SCALE_MAX)
+    cfg["ui_scale"] = ui_scale
 
     port_name=find_midi_port(cfg["midi_port_substr"])
     midi=open_output(port_name)
@@ -298,9 +350,23 @@ def main():
     cap=open_camera(cfg["cam_index"], cfg["width"], cfg["height"], cfg["fps"])
 
     # Windows
-    win="Head -> MIDI CC"; cv.namedWindow(win, cv.WINDOW_NORMAL); cv.moveWindow(win, 40, 40); cv.resizeWindow(win, 1050, 700)
-    ctrl="Control Panel"; cv.namedWindow(ctrl, cv.WINDOW_NORMAL); cv.moveWindow(ctrl, 1120, 40); cv.resizeWindow(ctrl, 420, 640)
-    panel = ControlPanel(ctrl, 420, 640)
+    win="Head -> MIDI CC"; cv.namedWindow(win, cv.WINDOW_NORMAL); cv.moveWindow(win, 40, 40); cv.resizeWindow(win, int(round(1050*ui_scale)), int(round(700*ui_scale)))
+    ctrl="Control Panel"; cv.namedWindow(ctrl, cv.WINDOW_NORMAL); cv.moveWindow(ctrl, 1120, 40)
+    panel = ControlPanel(ctrl, 420, 640, scale=ui_scale)
+    cv.resizeWindow(ctrl, panel.w, panel.h)
+
+    def apply_ui_scale(new_scale):
+        nonlocal ui_scale
+        new_scale = clamp(float(new_scale), UI_SCALE_MIN, UI_SCALE_MAX)
+        if abs(new_scale - ui_scale) < 1e-6:
+            return False
+        ui_scale = new_scale
+        cfg["ui_scale"] = ui_scale
+        cv.resizeWindow(win, int(round(1050*ui_scale)), int(round(700*ui_scale)))
+        panel.set_scale(ui_scale)
+        cv.resizeWindow(ctrl, panel.w, panel.h)
+        panel.render_if_needed()
+        return True
 
     # Trackbars
     def mk_tb(name, init, maxv): cv.createTrackbar(name, ctrl, init, maxv, lambda *_: None)
@@ -334,6 +400,7 @@ def main():
     panel.set_buttons(rows)
     panel.notify("Controls ready. Space toggles send, Q quits.")
     panel.notify("Press C to recalibrate origin; Y/P/R invert axes.")
+    panel.notify("Use [ / ] or - / + to change UI scale.")
     panel.render_if_needed()
 
     # FaceMesh
@@ -404,10 +471,13 @@ def main():
             # HUD
             if pose_ok:
                 cv.putText(frame, f"Yaw {yaw_s:6.1f}  Pitch {pitch_s:6.1f}  Roll {roll_s:6.1f}",
-                           (20,40), cv.FONT_HERSHEY_SIMPLEX, 1.0, (0,255,0), 2, cv.LINE_AA)
+                           (int(round(20*ui_scale)), int(round(40*ui_scale))), cv.FONT_HERSHEY_SIMPLEX,
+                           1.0 * ui_scale, (0,255,0), max(1, int(round(2*ui_scale))), cv.LINE_AA)
                 for x,y in pts2d.astype(int): cv.circle(frame,(x,y),3,(0,255,0),-1)
             else:
-                cv.putText(frame, "No face", (20,40), cv.FONT_HERSHEY_SIMPLEX, 1.0, (0,0,255), 2, cv.LINE_AA)
+                cv.putText(frame, "No face", (int(round(20*ui_scale)), int(round(40*ui_scale))),
+                           cv.FONT_HERSHEY_SIMPLEX, 1.0 * ui_scale, (0,0,255),
+                           max(1, int(round(2*ui_scale))), cv.LINE_AA)
 
             # CC mapping
             now = time.time()
@@ -441,11 +511,15 @@ def main():
             panel.update_cc_values(centered, abscc)
 
             # bars
-            draw_bars(frame, centered, "Centered CC  CC1/11/74", origin=(20,80))
-            draw_bars(frame, abscc,   "ABS CC       CC21/22/23", origin=(20, 80+3*(20+10)+26))
+            draw_bars(frame, centered, "Centered CC  CC1/11/74", origin=(20,80), scale=ui_scale)
+            draw_bars(frame, abscc,   "ABS CC       CC21/22/23", origin=(20, 80 + BAR_BLOCK_BASE_OFFSET), scale=ui_scale)
 
-            footer = f"Send={int(send_enabled)} | Ch={cfg['midi_channel']+1} | rate {cfg['send_rate_hz']}Hz | dz {cfg['deadzone_deg']:.1f}° | smooth {cfg['smooth_alpha']:.2f} | sens {cfg['global_sens_pct']}%"
-            cv.putText(frame, footer, (20, h-20), cv.FONT_HERSHEY_SIMPLEX, 0.6, (200,200,200), 1, cv.LINE_AA)
+            footer = (f"Send={int(send_enabled)} | Ch={cfg['midi_channel']+1} | rate {cfg['send_rate_hz']}Hz | "
+                      f"dz {cfg['deadzone_deg']:.1f}° | smooth {cfg['smooth_alpha']:.2f} | sens {cfg['global_sens_pct']}% | "
+                      f"UI {ui_scale:.2f}x")
+            cv.putText(frame, footer, (int(round(20*ui_scale)), h - int(round(20*ui_scale))),
+                       cv.FONT_HERSHEY_SIMPLEX, 0.6 * ui_scale, (200,200,200),
+                       max(1, int(round(1*ui_scale))), cv.LINE_AA)
             cv.imshow(win, frame)
 
             # Button actions
@@ -489,6 +563,12 @@ def main():
                 cfg["invert_roll"]=not cfg["invert_roll"];   panel.notify(f"Invert roll: {cfg['invert_roll']}")
             elif k==ord('s'):
                 save_cfg(cfg); panel.notify("Settings saved")
+            elif k in (ord('['), ord('{'), ord('-'), ord('_')):
+                if apply_ui_scale(ui_scale - 0.1):
+                    panel.notify(f"UI scale: {ui_scale:.2f}x")
+            elif k in (ord(']'), ord('}'), ord('+'), ord('=')):
+                if apply_ui_scale(ui_scale + 0.1):
+                    panel.notify(f"UI scale: {ui_scale:.2f}x")
 
             status = "Tracking" if pose_ok else "No face"
             send_state = "On" if send_enabled else "Muted"
@@ -505,6 +585,7 @@ def main():
                 ("Rate", f"{cfg['send_rate_hz']} Hz"),
                 ("Channel", f"{cfg['midi_channel']+1}"),
                 ("Send", send_state),
+                ("UI scale", f"{ui_scale:.2f}x"),
                 ("Face", status),
             ])
             panel.render_if_needed()
