@@ -475,50 +475,59 @@ class ControlPanel:
         return y + rows * (btn_h + gap) - gap + self._si(6)
 
     def render(self):
-        self.dirty = False
-        if self.img.shape[0] != self.h or self.img.shape[1] != self.w:
-            self.img = np.zeros((self.h, self.w, 3), dtype=np.uint8)
-        self.img[:] = (19, 19, 24)
-        pad = self._si(20)
-        font = cv.FONT_HERSHEY_SIMPLEX
-        accent = (155, 185, 255)
-        text_color = (232, 232, 232)
-        sub_color = (188, 188, 188)
-        now = time.time()
-        if self.flash_idx is not None and now >= self.flash_until:
-            self.flash_idx = None
-        y = pad + self._si(30)
-        cv.putText(self.img, "HeadCC Control", (pad, y), font, 0.9 * self.scale, text_color,
-                   self._thickness(2), cv.LINE_AA)
-        y += self._si(8)
-        cv.line(self.img, (pad, y), (self.w - pad, y), (65, 65, 75), self._thickness(1))
-        y += self._si(18)
-        y = self._draw_section_title(y, "Live status", font, accent, pad)
-        for label, value in self.readouts:
-            cv.putText(self.img, f"{label}: {value}", (pad, y), font, 0.55 * self.scale,
-                       sub_color, self._thickness(1), cv.LINE_AA)
-            y += self._si(22)
-        y += self._si(6)
-        y = self._draw_section_title(y, "MIDI output", font, accent, pad)
-        cv.putText(self.img,
-                   f"Centered CC 1/11/74   {self.centered[0]:3d}  {self.centered[1]:3d}  {self.centered[2]:3d}",
-                   (pad, y), font, 0.53 * self.scale, sub_color, self._thickness(1), cv.LINE_AA)
-        y += self._si(22)
-        cv.putText(self.img,
-                   f"Absolute CC 21/22/23  {self.abscc[0]:3d}  {self.abscc[1]:3d}  {self.abscc[2]:3d}",
-                   (pad, y), font, 0.53 * self.scale, sub_color, self._thickness(1), cv.LINE_AA)
-        y += self._si(28)
-        y = self._draw_section_title(y, "Modes", font, accent, pad)
-        y = self._draw_toggles(y, font, pad, text_color)
-        y = self._draw_section_title(y, "Adjustments", font, accent, pad)
-        y = self._draw_sliders(y, font, pad, text_color, sub_color)
-        y = self._draw_section_title(y, "Quick actions", font, accent, pad)
-        y = self._draw_buttons(y, font, pad, text_color, now)
-        y = self._draw_section_title(y, "Activity", font, accent, pad)
-        for line in self.status:
-            cv.putText(self.img, line, (pad, y), font, 0.5 * self.scale, sub_color,
-                       self._thickness(1), cv.LINE_AA)
+        while True:
+            self.dirty = False
+            if self.img.shape[0] != self.h or self.img.shape[1] != self.w:
+                self.img = np.zeros((self.h, self.w, 3), dtype=np.uint8)
+            self.img[:] = (19, 19, 24)
+            pad = self._si(20)
+            font = cv.FONT_HERSHEY_SIMPLEX
+            accent = (155, 185, 255)
+            text_color = (232, 232, 232)
+            sub_color = (188, 188, 188)
+            now = time.time()
+            if self.flash_idx is not None and now >= self.flash_until:
+                self.flash_idx = None
+            y = pad + self._si(30)
+            cv.putText(self.img, "HeadCC Control", (pad, y), font, 0.9 * self.scale, text_color,
+                       self._thickness(2), cv.LINE_AA)
+            y += self._si(8)
+            cv.line(self.img, (pad, y), (self.w - pad, y), (65, 65, 75), self._thickness(1))
             y += self._si(18)
+            y = self._draw_section_title(y, "Live status", font, accent, pad)
+            for label, value in self.readouts:
+                cv.putText(self.img, f"{label}: {value}", (pad, y), font, 0.55 * self.scale,
+                           sub_color, self._thickness(1), cv.LINE_AA)
+                y += self._si(22)
+            y += self._si(6)
+            y = self._draw_section_title(y, "MIDI output", font, accent, pad)
+            cv.putText(self.img,
+                       f"Centered CC 1/11/74   {self.centered[0]:3d}  {self.centered[1]:3d}  {self.centered[2]:3d}",
+                       (pad, y), font, 0.53 * self.scale, sub_color, self._thickness(1), cv.LINE_AA)
+            y += self._si(22)
+            cv.putText(self.img,
+                       f"Absolute CC 21/22/23  {self.abscc[0]:3d}  {self.abscc[1]:3d}  {self.abscc[2]:3d}",
+                       (pad, y), font, 0.53 * self.scale, sub_color, self._thickness(1), cv.LINE_AA)
+            y += self._si(28)
+            y = self._draw_section_title(y, "Modes", font, accent, pad)
+            y = self._draw_toggles(y, font, pad, text_color)
+            y = self._draw_section_title(y, "Adjustments", font, accent, pad)
+            y = self._draw_sliders(y, font, pad, text_color, sub_color)
+            y = self._draw_section_title(y, "Quick actions", font, accent, pad)
+            y = self._draw_buttons(y, font, pad, text_color, now)
+            y = self._draw_section_title(y, "Activity", font, accent, pad)
+            for line in self.status:
+                cv.putText(self.img, line, (pad, y), font, 0.5 * self.scale, sub_color,
+                           self._thickness(1), cv.LINE_AA)
+                y += self._si(18)
+            needed_h = max(self.h, y + pad)
+            if needed_h > self.h:
+                self.h = needed_h
+                self.img = np.zeros((self.h, self.w, 3), dtype=np.uint8)
+                cv.resizeWindow(self.win, self.w, self.h)
+                self.dirty = True
+                continue
+            break
         cv.imshow(self.win, self.img)
 
 
@@ -666,6 +675,7 @@ def main():
         ("Calibrate origin", "calibrate"),
         ("Save settings", "save"),
         ("Reset defaults", "reset"),
+        ("Burst current CCs", "burst_cc"),
         ("Send CC1 (Yaw)", f"cc:{cfg['cc_yaw']}"),
         ("Send CC11 (Pitch)", f"cc:{cfg['cc_pitch']}"),
         ("Send CC74 (Roll)", f"cc:{cfg['cc_roll']}"),
@@ -704,6 +714,14 @@ def main():
     yaw_s=pitch_s=roll_s=None
     last_send=0.0
     centered=(64,64,64); abscc=(0,0,0)
+
+    def send_cc_values(center_vals, abs_vals):
+        ch = cfg["midi_channel"]
+        for cc, val in zip((cfg["cc_yaw"], cfg["cc_pitch"], cfg["cc_roll"]), center_vals):
+            midi.send(Message('control_change', channel=ch, control=cc, value=int(val)))
+        for cc, val in zip((cfg["cc_yaw_abs"], cfg["cc_pitch_abs"], cfg["cc_roll_abs"]), abs_vals):
+            midi.send(Message('control_change', channel=ch, control=cc, value=int(val)))
+        return ch
 
     try:
         while True:
@@ -821,32 +839,26 @@ def main():
 
             # CC mapping
             now = time.time()
-            if pose_ok and send_enabled and (now - last_send) >= 1.0/cfg["send_rate_hz"]:
-                last_send=now
-                def dz(v): return 0.0 if abs(v) < cfg["deadzone_deg"] else v
-                yv, pv, rv = dz(yaw_s), dz(pitch_s), dz(roll_s)
+            if pose_ok:
+                def dz(v):
+                    return 0.0 if abs(v) < cfg["deadzone_deg"] else v
 
+                yv, pv, rv = dz(yaw_s), dz(pitch_s), dz(roll_s)
                 cy = map_centered(yv, yaw_rng)
                 cp = map_centered(pv, pitch_rng)
                 cr = map_centered(rv, roll_rng)
-                centered=(cy,cp,cr)
-
                 ay = map_abs(yv, yaw_rng)
                 ap = map_abs(pv, pitch_rng)
                 ar = map_abs(rv, roll_rng)
-                abscc=(ay,ap,ar)
+                centered = (cy, cp, cr)
+                abscc = (ay, ap, ar)
+            else:
+                centered = (64, 64, 64)
+                abscc = (0, 0, 0)
 
-                ch=cfg["midi_channel"]
-                # centered
-                for cc,val,label in [(cfg["cc_yaw"],cy,"Yaw"),
-                                     (cfg["cc_pitch"],cp,"Pitch"),
-                                     (cfg["cc_roll"],cr,"Roll")]:
-                    midi.send(Message('control_change', channel=ch, control=cc, value=val))
-                # absolute
-                for cc,val,label in [(cfg["cc_yaw_abs"],ay,"YawAbs"),
-                                     (cfg["cc_pitch_abs"],ap,"PitchAbs"),
-                                     (cfg["cc_roll_abs"],ar,"RollAbs")]:
-                    midi.send(Message('control_change', channel=ch, control=cc, value=val))
+            if pose_ok and send_enabled and (now - last_send) >= 1.0 / cfg["send_rate_hz"]:
+                last_send = now
+                send_cc_values(centered, abscc)
 
             panel.update_cc_values(centered, abscc)
 
@@ -867,7 +879,11 @@ def main():
             act = panel.consume_action()
             if act:
                 ch = cfg["midi_channel"]
-                if act.startswith("cc:"):
+                if act == "burst_cc":
+                    ch = send_cc_values(centered, abscc)
+                    last_send = time.time()
+                    panel.notify(f"Manual CC burst sent (ch {ch+1})")
+                elif act.startswith("cc:"):
                     cc = int(act.split(":")[1])
                     midi.send(Message('control_change', channel=ch, control=cc, value=127))
                     midi.send(Message('control_change', channel=ch, control=cc, value=0))
