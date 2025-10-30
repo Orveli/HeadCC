@@ -666,7 +666,6 @@ def main():
         ("Calibrate origin", "calibrate"),
         ("Save settings", "save"),
         ("Reset defaults", "reset"),
-        ("Burst current CCs", "burst_cc"),
         ("Send CC1 (Yaw)", f"cc:{cfg['cc_yaw']}"),
         ("Send CC11 (Pitch)", f"cc:{cfg['cc_pitch']}"),
         ("Send CC74 (Roll)", f"cc:{cfg['cc_roll']}"),
@@ -705,14 +704,6 @@ def main():
     yaw_s=pitch_s=roll_s=None
     last_send=0.0
     centered=(64,64,64); abscc=(0,0,0)
-
-    def send_cc_values(center_vals, abs_vals):
-        ch = cfg["midi_channel"]
-        for cc, val in zip((cfg["cc_yaw"], cfg["cc_pitch"], cfg["cc_roll"]), center_vals):
-            midi.send(Message('control_change', channel=ch, control=cc, value=int(val)))
-        for cc, val in zip((cfg["cc_yaw_abs"], cfg["cc_pitch_abs"], cfg["cc_roll_abs"]), abs_vals):
-            midi.send(Message('control_change', channel=ch, control=cc, value=int(val)))
-        return ch
 
     try:
         while True:
@@ -830,26 +821,32 @@ def main():
 
             # CC mapping
             now = time.time()
-            if pose_ok:
-                def dz(v):
-                    return 0.0 if abs(v) < cfg["deadzone_deg"] else v
-
+            if pose_ok and send_enabled and (now - last_send) >= 1.0/cfg["send_rate_hz"]:
+                last_send=now
+                def dz(v): return 0.0 if abs(v) < cfg["deadzone_deg"] else v
                 yv, pv, rv = dz(yaw_s), dz(pitch_s), dz(roll_s)
+
                 cy = map_centered(yv, yaw_rng)
                 cp = map_centered(pv, pitch_rng)
                 cr = map_centered(rv, roll_rng)
+                centered=(cy,cp,cr)
+
                 ay = map_abs(yv, yaw_rng)
                 ap = map_abs(pv, pitch_rng)
                 ar = map_abs(rv, roll_rng)
-                centered = (cy, cp, cr)
-                abscc = (ay, ap, ar)
-            else:
-                centered = (64, 64, 64)
-                abscc = (0, 0, 0)
+                abscc=(ay,ap,ar)
 
-            if pose_ok and send_enabled and (now - last_send) >= 1.0 / cfg["send_rate_hz"]:
-                last_send = now
-                send_cc_values(centered, abscc)
+                ch=cfg["midi_channel"]
+                # centered
+                for cc,val,label in [(cfg["cc_yaw"],cy,"Yaw"),
+                                     (cfg["cc_pitch"],cp,"Pitch"),
+                                     (cfg["cc_roll"],cr,"Roll")]:
+                    midi.send(Message('control_change', channel=ch, control=cc, value=val))
+                # absolute
+                for cc,val,label in [(cfg["cc_yaw_abs"],ay,"YawAbs"),
+                                     (cfg["cc_pitch_abs"],ap,"PitchAbs"),
+                                     (cfg["cc_roll_abs"],ar,"RollAbs")]:
+                    midi.send(Message('control_change', channel=ch, control=cc, value=val))
 
             panel.update_cc_values(centered, abscc)
 
@@ -870,11 +867,7 @@ def main():
             act = panel.consume_action()
             if act:
                 ch = cfg["midi_channel"]
-                if act == "burst_cc":
-                    ch = send_cc_values(centered, abscc)
-                    last_send = time.time()
-                    panel.notify(f"Manual CC burst sent (ch {ch+1})")
-                elif act.startswith("cc:"):
+                if act.startswith("cc:"):
                     cc = int(act.split(":")[1])
                     midi.send(Message('control_change', channel=ch, control=cc, value=127))
                     midi.send(Message('control_change', channel=ch, control=cc, value=0))
