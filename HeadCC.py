@@ -26,6 +26,7 @@ DEFAULTS = {
     "roll_range_deg":  [-35.0, 35.0],
     "global_sens_pct": 100,     # 10..300 %
     "invert_yaw": False, "invert_pitch": False, "invert_roll": False,
+    "eye_drum_enabled": False,
     # camera
     "cam_index": 0, "width": 1280, "height": 720, "fps": 60, "fov_deg": 60.0,
     # UI
@@ -41,6 +42,19 @@ MODEL_POINTS = np.array([
     (-43.3, 32.7, -26.0), (43.3, 32.7, -26.0),
     (-28.9, -28.9, -24.1), (28.9, -28.9, -24.1)
 ], dtype=np.float32)
+
+LEFT_EYE_VERTICAL = [(159, 145), (158, 153)]
+RIGHT_EYE_VERTICAL = [(386, 374), (385, 380)]
+LEFT_EYE_HORIZONTAL = (33, 133)
+RIGHT_EYE_HORIZONTAL = (362, 263)
+EYE_RATIO_SMOOTH = 0.4
+EYE_CLOSED_THRESHOLD = 0.21
+EYE_OPEN_THRESHOLD = 0.26
+
+RIGHT_SOLO_NOTE = 42   # Closed hi-hat
+RIGHT_BOTH_NOTE = 46   # Open hi-hat
+LEFT_SOLO_NOTE = 38    # Acoustic snare
+LEFT_BOTH_NOTE = 39    # Hand clap
 
 # ---------- utils ----------
 def load_cfg():
@@ -113,6 +127,33 @@ def roll_from_eyes_2d(lms, w, h):
     xL, yL = lms[33].x*w,  lms[33].y*h
     xR, yR = lms[263].x*w, lms[263].y*h
     return -np.degrees(np.arctan2(yR - yL, xR - xL))
+
+def eye_openness(lms, vertical_pairs, horizontal_pair, w, h):
+    def dist(a, b):
+        dx = (lms[a].x - lms[b].x) * w
+        dy = (lms[a].y - lms[b].y) * h
+        return np.hypot(dx, dy)
+
+    horiz = dist(*horizontal_pair)
+    if horiz <= 1e-6:
+        return None
+    total = 0.0
+    count = 0
+    for top, bottom in vertical_pairs:
+        d = dist(top, bottom)
+        if d > 0:
+            total += d
+            count += 1
+    if count == 0:
+        return None
+    return (total / count) / horiz
+
+def apply_eye_hysteresis(ratio, was_closed):
+    if ratio is None:
+        return was_closed
+    if was_closed:
+        return ratio < EYE_OPEN_THRESHOLD
+    return ratio < EYE_CLOSED_THRESHOLD
 
 def unwrap(prev, curr):
     if prev is None: return curr
@@ -572,6 +613,7 @@ SLIDER_RATE = "send_rate"
 SLIDER_CHANNEL = "midi_channel"
 
 TOGGLE_SEND = "send_enabled"
+TOGGLE_EYE_DRUM = "eye_drum"
 TOGGLE_INV_YAW = "invert_yaw"
 TOGGLE_INV_PITCH = "invert_pitch"
 TOGGLE_INV_ROLL = "invert_roll"
@@ -591,6 +633,7 @@ def apply_cfg_to_panel(panel, cfg):
     panel.set_toggle_state(TOGGLE_INV_YAW, cfg.get("invert_yaw", False))
     panel.set_toggle_state(TOGGLE_INV_PITCH, cfg.get("invert_pitch", False))
     panel.set_toggle_state(TOGGLE_INV_ROLL, cfg.get("invert_roll", False))
+    panel.set_toggle_state(TOGGLE_EYE_DRUM, cfg.get("eye_drum_enabled", False))
 # ---------- main ----------
 def main():
     ap=argparse.ArgumentParser()
@@ -601,6 +644,7 @@ def main():
     args=ap.parse_args()
 
     cfg=load_cfg()
+    cfg.setdefault("eye_drum_enabled", False)
     if args.cam is not None: cfg["cam_index"]=args.cam
     if args.port: cfg["midi_port_substr"]=args.port
     if args.ui_scale is not None: cfg["ui_scale"] = args.ui_scale
@@ -667,6 +711,7 @@ def main():
     panel.set_sliders(slider_specs)
     panel.set_toggles([
         {"key": TOGGLE_SEND, "label": "Send MIDI", "value": True},
+        {"key": TOGGLE_EYE_DRUM, "label": "Eye drum", "value": cfg.get("eye_drum_enabled", False)},
         {"key": TOGGLE_INV_YAW, "label": "Invert yaw", "value": cfg.get("invert_yaw", False)},
         {"key": TOGGLE_INV_PITCH, "label": "Invert pitch", "value": cfg.get("invert_pitch", False)},
         {"key": TOGGLE_INV_ROLL, "label": "Invert roll", "value": cfg.get("invert_roll", False)},
@@ -685,12 +730,14 @@ def main():
     ])
     apply_cfg_to_panel(panel, cfg)
     panel.set_toggle_state(TOGGLE_SEND, True)
+    panel.set_toggle_state(TOGGLE_EYE_DRUM, cfg.get("eye_drum_enabled", False))
     panel.notify("Controls ready. Space toggles send or use the panel toggle.")
     panel.notify("Press C or the Calibrate button to set a neutral pose.")
     panel.notify("Y/P/R flip axes; +/- adjust UI scale; Q quits.")
     panel.render_if_needed()
 
     send_enabled_prev = panel.get_toggle_state(TOGGLE_SEND)
+    eye_drum_prev = panel.get_toggle_state(TOGGLE_EYE_DRUM)
     invert_prev = {
         TOGGLE_INV_YAW: panel.get_toggle_state(TOGGLE_INV_YAW),
         TOGGLE_INV_PITCH: panel.get_toggle_state(TOGGLE_INV_PITCH),
@@ -714,6 +761,8 @@ def main():
     yaw_s=pitch_s=roll_s=None
     last_send=0.0
     centered=(64,64,64); abscc=(0,0,0)
+    left_eye_ratio = right_eye_ratio = None
+    left_eye_closed = right_eye_closed = False
 
     def send_cc_values(center_vals, abs_vals):
         ch = cfg["midi_channel"]
@@ -722,6 +771,11 @@ def main():
         for cc, val in zip((cfg["cc_yaw_abs"], cfg["cc_pitch_abs"], cfg["cc_roll_abs"]), abs_vals):
             midi.send(Message('control_change', channel=ch, control=cc, value=int(val)))
         return ch
+
+    def send_eye_note(note, velocity=120):
+        ch = cfg["midi_channel"]
+        midi.send(Message('note_on', channel=ch, note=int(note), velocity=int(clamp(velocity, 1, 127))))
+        midi.send(Message('note_off', channel=ch, note=int(note), velocity=0))
 
     try:
         while True:
@@ -751,6 +805,12 @@ def main():
                 panel.notify("Send enabled" if send_enabled else "Send muted")
                 send_enabled_prev = send_enabled
             send_state = "On" if send_enabled else "Muted"
+
+            eye_drum_enabled = panel.get_toggle_state(TOGGLE_EYE_DRUM)
+            if eye_drum_enabled != eye_drum_prev:
+                panel.notify("Eye drum enabled" if eye_drum_enabled else "Eye drum disabled")
+                eye_drum_prev = eye_drum_enabled
+            cfg["eye_drum_enabled"] = eye_drum_enabled
 
             invert_states = {
                 TOGGLE_INV_YAW: panel.get_toggle_state(TOGGLE_INV_YAW),
@@ -784,6 +844,21 @@ def main():
             if res.multi_face_landmarks:
                 face_landmarks = res.multi_face_landmarks[0]
                 lms = face_landmarks.landmark
+                raw_left = eye_openness(lms, LEFT_EYE_VERTICAL, LEFT_EYE_HORIZONTAL, w, h)
+                raw_right = eye_openness(lms, RIGHT_EYE_VERTICAL, RIGHT_EYE_HORIZONTAL, w, h)
+                if raw_left is not None:
+                    left_eye_ratio = ema(left_eye_ratio, raw_left, EYE_RATIO_SMOOTH)
+                if raw_right is not None:
+                    right_eye_ratio = ema(right_eye_ratio, raw_right, EYE_RATIO_SMOOTH)
+                prev_left_closed = left_eye_closed
+                prev_right_closed = right_eye_closed
+                left_eye_closed = apply_eye_hysteresis(left_eye_ratio, left_eye_closed)
+                right_eye_closed = apply_eye_hysteresis(right_eye_ratio, right_eye_closed)
+                if eye_drum_enabled and send_enabled:
+                    if left_eye_closed and not prev_left_closed:
+                        send_eye_note(LEFT_BOTH_NOTE if right_eye_closed else LEFT_SOLO_NOTE)
+                    if right_eye_closed and not prev_right_closed:
+                        send_eye_note(RIGHT_BOTH_NOTE if left_eye_closed else RIGHT_SOLO_NOTE)
                 pts2d = np.array([(lms[i].x*w, lms[i].y*h) for i in LM], dtype=np.float32)
                 R, prev_rvec, prev_tvec = solve_pose(pts2d, w, h, cfg["fov_deg"], prev_rvec, prev_tvec)
                 if R is not None:
@@ -802,6 +877,9 @@ def main():
                     pitch_s = ema(pitch_s, pitch, cfg["smooth_alpha"])
                     roll_s  = ema(roll_s,  roll,  cfg["smooth_alpha"])
                     pose_ok=True
+            else:
+                left_eye_ratio = right_eye_ratio = None
+                left_eye_closed = right_eye_closed = False
 
             # HUD
             if face_landmarks is not None:
@@ -898,8 +976,10 @@ def main():
                     cfg.update(keep)
                     apply_cfg_to_panel(panel, cfg)
                     panel.set_toggle_state(TOGGLE_SEND, True)
+                    panel.set_toggle_state(TOGGLE_EYE_DRUM, cfg.get("eye_drum_enabled", False))
                     send_enabled_prev = panel.get_toggle_state(TOGGLE_SEND)
                     send_enabled = send_enabled_prev
+                    eye_drum_prev = panel.get_toggle_state(TOGGLE_EYE_DRUM)
                     invert_prev[TOGGLE_INV_YAW] = panel.get_toggle_state(TOGGLE_INV_YAW)
                     invert_prev[TOGGLE_INV_PITCH] = panel.get_toggle_state(TOGGLE_INV_PITCH)
                     invert_prev[TOGGLE_INV_ROLL] = panel.get_toggle_state(TOGGLE_INV_ROLL)
@@ -962,6 +1042,7 @@ def main():
             panel.update_readouts([
                 ("Face", status),
                 ("Send", send_state),
+                ("Eye drum", "On" if eye_drum_enabled and send_enabled else "Off"),
                 ("Channel", f"{cfg['midi_channel']+1}"),
                 ("Rate", f"{cfg['send_rate_hz']} Hz"),
                 ("Yaw range", f"±{yaw_half:.0f}°"),
